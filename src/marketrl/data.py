@@ -29,9 +29,18 @@ __all__ = [
     "load_yahoo",
     "load_stooq",
     "load_csv",
+    "load_sp500",
+    "sp500_symbols",
     "synthetic_prices",
     "cache_dir",
 ]
+
+#: A public, versioned S&P 500 daily OHLCV dataset (505 symbols, 2013-2018).
+#: Useful as a fixed, citable benchmark: unlike a live API it does not move
+#: under you, so a result published against it can be reproduced exactly.
+SP500_URL = (
+    "https://raw.githubusercontent.com/plotly/datasets/master/all_stocks_5yr.csv"
+)
 
 OHLCV_COLUMNS = ["open", "high", "low", "close", "adj_close", "volume"]
 
@@ -177,6 +186,56 @@ def load_csv(path: str | Path, symbol: str | None = None) -> pd.DataFrame:
     return _finalize(frame, symbol or Path(path).stem.upper(), "csv")
 
 
+def _sp500_bundle(*, cache: bool = True) -> pd.DataFrame:
+    """Fetch (once) and cache the full multi-symbol dataset."""
+    path = cache_dir() / "sp500_5yr.csv"
+    if cache and path.exists() and path.stat().st_size > 1_000_000:
+        return pd.read_csv(path)
+
+    raw = _http_get(SP500_URL, timeout=180.0)
+    frame = pd.read_csv(io.BytesIO(raw))
+    if cache:
+        try:
+            path.write_bytes(raw)
+        except OSError:
+            pass
+    return frame
+
+
+def sp500_symbols(*, cache: bool = True) -> list[str]:
+    """Every ticker available in the bundled S&P 500 dataset."""
+    return sorted(_sp500_bundle(cache=cache)["Name"].dropna().unique().tolist())
+
+
+def load_sp500(symbol: str, start=None, end=None, *, cache: bool = True) -> pd.DataFrame:
+    """Load one symbol from the public S&P 500 daily dataset.
+
+    Real market data, fixed in time (2013-02 to 2018-02), which makes it the
+    right thing to benchmark against: a live API changes between runs, so a
+    number quoted from one is not reproducible. The trade-off is that this
+    covers a single mostly-rising regime -- see the docs before generalizing
+    from it.
+
+    Prices are the dataset's own OHLCV and are **not dividend-adjusted**, so
+    buy-and-hold total return here understates the real figure by roughly the
+    dividend yield.
+    """
+    bundle = _sp500_bundle(cache=cache)
+    ticker = symbol.upper()
+    rows = bundle[bundle["Name"] == ticker]
+    if rows.empty:
+        available = sorted(bundle["Name"].dropna().unique().tolist())
+        raise DataError(
+            f"{ticker} is not in the S&P 500 dataset ({len(available)} symbols "
+            f"available, e.g. {', '.join(available[:8])})"
+        )
+
+    rows = rows.set_index("date")[["open", "high", "low", "close", "volume"]].copy()
+    rows["adj_close"] = rows["close"]
+    frame = _finalize(rows, ticker, "sp500-2013-2018")
+    return _slice(frame, start, end)
+
+
 def _slice(frame: pd.DataFrame, start=None, end=None) -> pd.DataFrame:
     attrs = dict(frame.attrs)
     if start is not None:
@@ -263,11 +322,14 @@ def load(
     """Load daily bars, with an on-disk cache.
 
     ``source`` is one of ``auto`` (Yahoo, then Stooq), ``yahoo``, ``stooq``,
+    ``sp500`` (a fixed public dataset of real 2013-2018 daily bars),
     ``synthetic``, or a path to a CSV file. Network failure raises
     :class:`DataError` -- it never degrades to synthetic data silently.
     """
     if source == "synthetic":
         return synthetic_prices(symbol=symbol)
+    if source == "sp500":
+        return load_sp500(symbol, start, end, cache=cache)
     if source not in {"auto", "yahoo", "stooq"}:
         return _slice(load_csv(source, symbol=symbol), start, end)
 

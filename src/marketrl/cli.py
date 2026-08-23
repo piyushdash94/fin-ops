@@ -3,6 +3,8 @@
     marketrl run --symbol AAPL          load real prices and run everything
     marketrl demo --signal 0.8          same pipeline on simulated prices
     marketrl data --symbol MSFT         fetch and summarize price history
+    marketrl scan --limit 120           run one model across many symbols and
+                                        correct for having tested them all
     marketrl selftest                   prove the pipeline detects signal
                                         and, more importantly, its absence
 """
@@ -80,6 +82,45 @@ def cmd_data(args) -> int:
     if args.save:
         prices.to_csv(args.save)
         print(f"\nsaved to {args.save}")
+    return 0
+
+
+def cmd_scan(args) -> int:
+    from .scan import scan_symbols
+
+    if args.symbols:
+        symbols = [s.upper() for s in args.symbols]
+    elif args.source == "sp500":
+        from .data import sp500_symbols
+
+        try:
+            symbols = sp500_symbols()
+        except DataError as err:
+            print(f"error: {err}", file=sys.stderr)
+            return 1
+        if args.limit:
+            symbols = symbols[: args.limit]
+    else:
+        print("error: pass --symbols, or use --source sp500 for the bundled list",
+              file=sys.stderr)
+        return 2
+
+    if not args.json:
+        print(f"scanning {len(symbols)} symbols with {args.model} ...", flush=True)
+
+    report = scan_symbols(
+        symbols, source=args.source, model=args.model,
+        start=args.start, end=args.end,
+        train_size=args.train, test_size=args.test, cost_bps=args.cost_bps,
+        threshold=args.threshold, allow_short=not args.long_only,
+        alpha=args.alpha, min_test_days=args.min_test_days,
+        progress=not args.json,
+    )
+    if args.json:
+        print(json.dumps(report.as_dict(), indent=2, default=str))
+        return 0
+    print()
+    print(report.render(top=args.top))
     return 0
 
 
@@ -167,6 +208,28 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(p)
     p.add_argument("--save", help="write the bars to this CSV path")
     p.set_defaults(func=cmd_data)
+
+    p = sub.add_parser(
+        "scan",
+        help="run one model across many symbols, with multiple-comparisons correction",
+    )
+    p.add_argument("--symbols", nargs="*", help="explicit tickers; omit to use the dataset list")
+    p.add_argument("--source", default="sp500",
+                   help="sp500 (bundled real 2013-2018 data), yahoo, stooq, or auto")
+    p.add_argument("--start", default=None)
+    p.add_argument("--end", default=None)
+    p.add_argument("--limit", type=int, default=120, help="cap how many symbols to scan")
+    p.add_argument("--model", default="ridge")
+    p.add_argument("--train", type=int, default=500)
+    p.add_argument("--test", type=int, default=126)
+    p.add_argument("--cost-bps", type=float, default=10.0)
+    p.add_argument("--threshold", type=float, default=0.0)
+    p.add_argument("--long-only", action="store_true")
+    p.add_argument("--alpha", type=float, default=0.05)
+    p.add_argument("--min-test-days", type=int, default=250)
+    p.add_argument("--top", type=int, default=10)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_scan)
 
     p = sub.add_parser("selftest", help="verify the pipeline detects signal and noise")
     p.set_defaults(func=cmd_selftest)

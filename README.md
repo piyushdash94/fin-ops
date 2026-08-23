@@ -10,7 +10,7 @@ and refusing to believe a number that hasn't been tested.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest        # 172 tests, no network required
+python -m pytest        # 187 tests
 ```
 
 ---
@@ -47,54 +47,94 @@ agent's own objective includes the friction it creates.
 Over 1,400 days it is a coin flip (p = 0.27). Every directional number in the
 report ships with the probability of seeing it by chance.
 
-### It is validated against a market with no edge
+### Real results on real data
 
-The generator can produce a market that is provably unpredictable
-(`signal=0.0`) or one with a real planted edge (`signal=0.8`). Both are tested
-on every run — `marketrl selftest` — because a backtester that cannot return a
-null result will eventually tell you to trade on noise.
-
-Here is the real output on an efficient market:
+The headline experiment: one model, 116 real S&P 500 stocks, 506 out-of-sample
+days each, net of 10bps costs.
 
 ```console
-$ marketrl demo --signal 0.0
-FORECAST QUALITY  (predicting next-day log return)
-  model                 dir.acc  p-value      IC      RMSE
-  --------------------------------------------------------
-  persistence             0.499   0.5419  -0.004   0.01147
-  ridge                   0.493   0.7005  -0.018   0.00825
-  random_forest           0.496   0.6238   0.008   0.00815
-  gradient_boosting       0.501   0.4790   0.001   0.00834
+$ marketrl scan --limit 120 --model ridge
 
-STRATEGY PERFORMANCE  (net of costs, out-of-sample)
-  strategy               return    CAGR  Sharpe   maxDD  turnover
-  ---------------------------------------------------------------
-  buy_and_hold            63.1%    8.9%    0.72   14.9%      0.2x
-  reinforce              -11.6%   -2.1%   -0.10   19.0%     45.8x
-  random_forest          -55.4%  -13.1%   -1.01   58.2%    133.9x
-  ridge                  -62.9%  -15.8%   -1.26   65.6%    138.1x
-  q_learning             -77.5%  -22.9%   -2.00   78.9%    191.7x
+DIRECTIONAL ACCURACY ACROSS SYMBOLS
+  mean 0.4974   median 0.4960   sd 0.0239
+  range 0.425 to 0.553
+  sd predicted by chance alone 0.0222   (observed/predicted = 1.08x)
+
+MULTIPLE COMPARISONS
+  nominally significant (p < 0.05)   5 of 116
+  expected from chance alone                5.8
+  survive Benjamini-Hochberg FDR            0
+  survive Bonferroni                        0
+
+VERSUS BUY-AND-HOLD (net of costs)
+  beat benchmark on Sharpe                  9 of 116 (8%)
+  mean excess Sharpe                        -1.450
+  median annual turnover                    139x
 
 VERDICT
-  No model's directional accuracy is distinguishable from a coin flip (p >= 0.05).
-  Nothing beat buy-and-hold on risk-adjusted return after costs.
-  That is the expected outcome on a liquid instrument. Do not
-  re-run with new settings until something wins; that is how
-  backtest overfitting happens.
+  5 symbols cleared p < 0.05 individually, but chance alone predicts 5.8.
+  None survive correction for having tested 116 of them. There is no
+  evidence of next-day predictability here.
 ```
 
-Every model lands on ~50% and every strategy is destroyed by its own turnover.
-Run the same command with `--signal 0.8` and all three models clear p < 0.01
-with IC ≈ 0.13 and beat the benchmark — so the pipeline can find an edge; it
-just correctly reports there isn't one above.
+The third line of the first block is the finding. The spread in accuracy across
+116 stocks is **1.08x what pure chance predicts** — so the gap between the best
+stock (55.3%) and the worst (42.5%) is noise from end to end. There is no
+per-symbol skill to rank. Five nominal hits against 5.8 expected is not a
+discovery, and none survive correction.
+
+Report the winner without that correction and you would publish AMAT at 55.3%,
+p = 0.009, and be entirely wrong.
+
+**It replicates across model families.** Re-running the identical scan with
+gradient boosting — a completely different inductive bias — reaches the same
+conclusion:
+
+| | ridge | gradient boosting |
+|---|---:|---:|
+| mean directional accuracy | 0.4974 | 0.5002 |
+| observed spread ÷ chance spread | 1.08× | 0.95× |
+| nominally significant (of 116) | 5 | 5 |
+| expected by chance | 5.8 | 5.8 |
+| survive FDR correction | **0** | **0** |
+| beat buy-and-hold | 9 (8%) | 7 (6%) |
+| median annual turnover | 139× | 174× |
+
+Two unrelated model families, both landing exactly on chance. That is what an
+efficient market looks like from the inside.
+
+### Why you should believe the null result
+
+A negative finding is only worth anything if the tool could have found a
+positive one. Three checks establish that, and all three run in CI:
+
+**The agents solve a solvable market.** Given a synthetic market where one
+feature reveals tomorrow's sign, Q-learning captures 85.5% of the theoretical
+maximum profit and REINFORCE 98.6%, both with clearly rising learning curves.
+On real prices the same agents earn nothing. The implementation works; the
+market is the problem.
+
+**The pipeline detects a planted edge.** `marketrl selftest` runs the whole
+thing on a market with known predictability (all models clear p < 0.01,
+IC ≈ 0.13) and on a provably efficient one (nothing significant, verdict says
+so). A backtester that cannot return a null result will eventually tell you to
+trade on noise.
+
+**A deliberate leak is caught.** The test suite plants `shift(-1)` on the price
+into the feature set and asserts `assert_no_lookahead()` raises — because a
+safety check nobody has watched fail is not a safety check.
 
 ## Usage
 
 ```console
-$ marketrl run --symbol AAPL --start 2010-01-01 --cost-bps 10
-$ marketrl data --symbol MSFT --save msft.csv
-$ marketrl selftest
+$ marketrl run  --symbol AAPL --source sp500     # one stock, every model
+$ marketrl scan --limit 120 --model ridge        # many stocks, FDR-corrected
+$ marketrl data --symbol MSFT --source sp500     # summarize price history
+$ marketrl selftest                              # prove the pipeline works
 ```
+
+Worked examples with real output live in **[docs/USE_CASES.md](docs/USE_CASES.md)**;
+the runnable scripts are in [`examples/`](examples/).
 
 ```python
 from marketrl import load, run_pipeline
@@ -102,11 +142,24 @@ from marketrl import load, run_pipeline
 print(run_pipeline(load("AAPL"), cost_bps=10.0).render())
 ```
 
-Data comes from Yahoo Finance's chart API (used directly — one fewer dependency
-than `yfinance`, and legible failures), with Stooq as a second free source and
-local CSV for any other dataset. **A network failure raises**; it never
-degrades to simulated prices. Synthetic data must be asked for by name, and
-every report built on it carries a banner saying so.
+### Data sources
+
+| Source | What it is |
+|---|---|
+| `sp500` | A fixed public dataset of **real** daily bars — 505 S&P 500 symbols, 2013-02 to 2018-02. Every result above comes from this. |
+| `yahoo` | Yahoo Finance's chart API, used directly (one fewer dependency than `yfinance`, and legible failures). Live and current. |
+| `stooq` | A second free source, no key required. |
+| a CSV path | Any other dataset you have on disk. |
+| `synthetic` | Simulated prices with tunable predictability, for validation. |
+
+The `sp500` dataset is the default benchmark precisely because it is frozen: a
+live API changes between runs, so a number quoted from one cannot be reproduced.
+Its limits are real, though — a single mostly-rising regime, no dividend
+adjustment, and survivorship bias baked in (these are companies that were in the
+index in 2018).
+
+**A network failure raises.** It never degrades to simulated prices. Synthetic
+data must be asked for by name, and every report built on it carries a banner.
 
 ## What's inside
 
@@ -143,8 +196,10 @@ on real data is a statement about the market, not a broken implementation.
   fills are worse.
 - **Single asset, no portfolio construction**, no position sizing beyond
   -1/0/+1, no risk limits.
-- **Survivorship bias** is untouched — backtest a delisted ticker and you'll get
-  nothing; backtest today's index members and you've already cheated.
+- **Survivorship bias** is untouched, and the bundled dataset has it by
+  construction: those 505 companies are the ones still in the index in 2018.
+- **One regime.** 2013-2018 contains no sustained bear market. Nothing here has
+  been tested through a crash.
 - **The multiple-comparisons problem is yours.** Nothing stops you from trying
   fifty symbols and reporting the best. The p-values above are not corrected for
   that, and the verdict text says so.
