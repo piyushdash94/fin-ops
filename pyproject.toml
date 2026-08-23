@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "finops"
+version = "0.1.0"
+description = "Token accounting and cost control for Claude-powered applications."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+# Exact token counting and the tracking client need the Anthropic SDK.
+# Everything else (pricing, budgeting, the ledger) is stdlib-only.
+api = ["anthropic>=0.40"]
+dev = ["anthropic>=0.40", "pytest>=7"]
+
+[project.scripts]
+finops = "finops.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/finops"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
