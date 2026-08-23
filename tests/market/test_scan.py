@@ -94,6 +94,10 @@ def test_report_serializes_to_json():
 
 
 # ------------------------------------------------------ scanning mechanics
+# These four fetch the public S&P 500 dataset. They are excluded from the
+# default run so `pytest` stays offline and deterministic; CI runs them
+# separately with `-m network`.
+@pytest.mark.network
 def test_scan_uses_full_history_not_the_default_start_date():
     """Regression: load()'s default start silently shrank every test set to 28 days."""
     report = scan_symbols(["AAPL", "MSFT"], source="sp500", model="ridge",
@@ -103,6 +107,7 @@ def test_scan_uses_full_history_not_the_default_start_date():
         assert result.n_test_days > 400, "history was truncated"
 
 
+@pytest.mark.network
 def test_scan_drops_symbols_with_too_short_a_test_window():
     report = scan_symbols(["AAPL"], source="sp500", model="ridge",
                           train_size=500, test_size=126, min_test_days=10_000)
@@ -110,6 +115,7 @@ def test_scan_drops_symbols_with_too_short_a_test_window():
     assert "out-of-sample days" in report.failures["AAPL"]
 
 
+@pytest.mark.network
 def test_scan_records_failures_instead_of_raising():
     report = scan_symbols(["AAPL", "NOT_A_TICKER"], source="sp500", model="ridge",
                           train_size=500, test_size=126)
@@ -117,6 +123,7 @@ def test_scan_records_failures_instead_of_raising():
     assert "NOT_A_TICKER" in report.failures
 
 
+@pytest.mark.network
 def test_scan_on_real_data_finds_no_edge():
     """The headline empirical result, in miniature."""
     report = scan_symbols(

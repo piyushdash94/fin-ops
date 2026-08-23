@@ -10,7 +10,7 @@ and refusing to believe a number that hasn't been tested.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest        # 187 tests
+python -m pytest        # 183 tests, fully offline
 ```
 
 ---
@@ -106,7 +106,9 @@ efficient market looks like from the inside.
 ### Why you should believe the null result
 
 A negative finding is only worth anything if the tool could have found a
-positive one. Three checks establish that, and all three run in CI:
+positive one. Three checks establish that, and each runs on every commit
+(`.github/workflows/tests.yml`, the `validation` job) rather than living in a
+README:
 
 **The agents solve a solvable market.** Given a synthetic market where one
 feature reveals tomorrow's sign, Q-learning captures 85.5% of the theoretical
@@ -218,3 +220,17 @@ budgeting, and an append-only usage ledger. See **[docs/finops.md](docs/finops.m
 ```console
 $ finops report --group-by tag:feature --since 7d
 ```
+
+
+## Running the tests
+
+```bash
+python -m pytest              # 183 tests, fully offline and deterministic
+python -m pytest -m network   # 4 more that download the public S&P 500 dataset
+```
+
+The default run touches no network and needs no API key — verified in CI by the
+`offline` job, and locally by running the suite with the cache removed and the
+proxy pointed at a dead port. The four data-fetching tests are marked `network`
+and excluded by default so a third-party host being down can never turn the
+suite red.

@@ -34,4 +34,8 @@ packages = ["src/finops", "src/marketrl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: end-to-end runs that train RL agents over every fold"]
+addopts = "-m 'not network'"
+markers = [
+    "slow: end-to-end runs that train RL agents over every fold",
+    "network: needs to download the public S&P 500 dataset; excluded by default",
+]

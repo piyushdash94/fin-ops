@@ -1,0 +1,59 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  offline:
+    name: test suite (offline)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -e ".[dev]"
+      # The default run excludes network tests, so this proves the suite is
+      # self-contained: no API keys, no downloads, no live market data.
+      - run: python -m pytest -q
+
+  validation:
+    name: pipeline validation (detects signal, and its absence)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      # The claim that a null result is trustworthy rests on these three
+      # checks, so they run on every commit rather than living in a README.
+      - name: agents learn, pipeline rejects noise, lookahead is caught
+        run: |
+          python -m pytest -q \
+            tests/market/test_pipeline.py \
+            tests/market/test_env_agents.py \
+            "tests/market/test_features.py::test_lookahead_check_catches_a_deliberate_leak"
+      - name: selftest
+        run: marketrl selftest
+
+  network:
+    name: real market data
+    runs-on: ubuntu-latest
+    continue-on-error: true  # a third-party dataset host must not gate the PR
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q -m network

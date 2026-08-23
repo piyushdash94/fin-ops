@@ -149,7 +149,8 @@ It rewrites every bar after a cut point with random noise and asserts that no
 feature value *at or before* the cut changed. Anything that moved was reading
 the future.
 
-Add it to your own feature pipeline and to CI. The test suite here plants a
+Add it to your own feature pipeline and to CI (this repo runs it in the
+`validation` job on every commit). The test suite here plants a
 deliberate leak (`shift(-1)` on the price) to confirm the check catches it —
 because a safety check nobody has ever seen fail is not a safety check.
 
