@@ -5,23 +5,33 @@ build-backend = "hatchling.build"
 [project]
 name = "finops"
 version = "0.1.0"
-description = "Token accounting and cost control for Claude-powered applications."
+description = "Two cost-and-risk toolkits: LLM token accounting, and ML/RL price prediction."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = []
 
 [project.optional-dependencies]
-# Exact token counting and the tracking client need the Anthropic SDK.
-# Everything else (pricing, budgeting, the ledger) is stdlib-only.
+# finops (LLM cost accounting) is stdlib-only; the Anthropic SDK is needed
+# only for exact token counting and the tracking client.
 api = ["anthropic>=0.40"]
-dev = ["anthropic>=0.40", "pytest>=7"]
+# marketrl (price prediction) needs the numeric stack.
+market = ["numpy>=1.24", "pandas>=2.0", "scikit-learn>=1.3"]
+dev = [
+    "anthropic>=0.40",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scikit-learn>=1.3",
+    "pytest>=7",
+]
 
 [project.scripts]
 finops = "finops.cli:main"
+marketrl = "marketrl.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/finops"]
+packages = ["src/finops", "src/marketrl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: end-to-end runs that train RL agents over every fold"]

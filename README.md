@@ -1,184 +1,165 @@
 # fin-ops
 
-Token accounting and cost control for Claude-powered applications.
+Two toolkits about the same discipline — measuring what something really costs,
+and refusing to believe a number that hasn't been tested.
 
-LLM spend is unusual: the unit price is public, but the quantity is decided at
-runtime by a model, and the single largest lever — prompt caching — is invisible
-unless you go looking for it. `finops` makes the quantity, the price, and the
-caching lever all observable, in about four lines of setup.
-
-Stdlib-only for pricing, budgeting and reporting. The Anthropic SDK is needed
-only for exact token counts and the tracking client.
+| Package | What it does |
+|---|---|
+| **[`marketrl`](#marketrl)** | Next-day stock return prediction with ML and RL, evaluated walk-forward and net of costs |
+| **[`finops`](docs/finops.md)** | Token accounting and cost control for Claude-powered applications |
 
 ```bash
 pip install -e ".[dev]"
+python -m pytest        # 172 tests, no network required
 ```
 
-## Instrument once
+---
+
+# marketrl
+
+Predicts the next day's return for a stock using supervised ML and two
+reinforcement-learning agents, then tells you — usually — that it didn't work.
+
+That last part is the feature. Building a model that appears to predict the
+market is easy and takes about thirty lines; nearly all of them are wrong for
+one of four reasons, and this package is organized around those four.
+
+### The four ways a price model lies to you
+
+**1. Lookahead.** A centered rolling window, a scaler fitted on the whole
+series, `shift(-1)` in the wrong place — any of these produce a beautiful
+backtest and a losing strategy. Rather than trusting review,
+`assert_no_lookahead()` mechanically rewrites the future with noise and asserts
+that no feature computed at time *t* changed. It runs in the test suite, and a
+test deliberately plants a leak to confirm the check catches it.
+
+**2. Predicting the price instead of the return.** Predicting tomorrow's *price*
+scores R² ≈ 0.999 and means nothing — tomorrow's price is roughly today's price.
+The target here is next-day **log return**, the part that is genuinely unknown.
+
+**3. Ignoring costs.** Both the backtester and the RL reward charge
+transaction costs on every change in exposure. This matters enormously: the
+strategies below trade 130–220× a year, so at 10bps a side that is a 13–22%
+annual drag. Costs are inside the RL *reward*, not subtracted afterwards, so the
+agent's own objective includes the friction it creates.
+
+**4. Mistaking noise for signal.** 52% directional accuracy sounds like an edge.
+Over 1,400 days it is a coin flip (p = 0.27). Every directional number in the
+report ships with the probability of seeing it by chance.
+
+### It is validated against a market with no edge
+
+The generator can produce a market that is provably unpredictable
+(`signal=0.0`) or one with a real planted edge (`signal=0.8`). Both are tested
+on every run — `marketrl selftest` — because a backtester that cannot return a
+null result will eventually tell you to trade on noise.
+
+Here is the real output on an efficient market:
+
+```console
+$ marketrl demo --signal 0.0
+FORECAST QUALITY  (predicting next-day log return)
+  model                 dir.acc  p-value      IC      RMSE
+  --------------------------------------------------------
+  persistence             0.499   0.5419  -0.004   0.01147
+  ridge                   0.493   0.7005  -0.018   0.00825
+  random_forest           0.496   0.6238   0.008   0.00815
+  gradient_boosting       0.501   0.4790   0.001   0.00834
+
+STRATEGY PERFORMANCE  (net of costs, out-of-sample)
+  strategy               return    CAGR  Sharpe   maxDD  turnover
+  ---------------------------------------------------------------
+  buy_and_hold            63.1%    8.9%    0.72   14.9%      0.2x
+  reinforce              -11.6%   -2.1%   -0.10   19.0%     45.8x
+  random_forest          -55.4%  -13.1%   -1.01   58.2%    133.9x
+  ridge                  -62.9%  -15.8%   -1.26   65.6%    138.1x
+  q_learning             -77.5%  -22.9%   -2.00   78.9%    191.7x
+
+VERDICT
+  No model's directional accuracy is distinguishable from a coin flip (p >= 0.05).
+  Nothing beat buy-and-hold on risk-adjusted return after costs.
+  That is the expected outcome on a liquid instrument. Do not
+  re-run with new settings until something wins; that is how
+  backtest overfitting happens.
+```
+
+Every model lands on ~50% and every strategy is destroyed by its own turnover.
+Run the same command with `--signal 0.8` and all three models clear p < 0.01
+with IC ≈ 0.13 and beat the benchmark — so the pipeline can find an edge; it
+just correctly reports there isn't one above.
+
+## Usage
+
+```console
+$ marketrl run --symbol AAPL --start 2010-01-01 --cost-bps 10
+$ marketrl data --symbol MSFT --save msft.csv
+$ marketrl selftest
+```
 
 ```python
-from anthropic import Anthropic
-from finops import TrackedClient
+from marketrl import load, run_pipeline
 
-client = TrackedClient(Anthropic(), tags={"service": "support-bot"})
-
-msg = client.messages.create(
-    model="claude-opus-5",
-    max_tokens=4096,
-    messages=[{"role": "user", "content": "..."}],
-)
+print(run_pipeline(load("AAPL"), cost_bps=10.0).render())
 ```
 
-The wrapper is transparent — unknown attributes pass through, and you get the
-SDK's own objects back. Every completed call is priced and appended to a ledger.
-Use `client.tagged(feature="search")` to attribute spend to a subsystem.
+Data comes from Yahoo Finance's chart API (used directly — one fewer dependency
+than `yfinance`, and legible failures), with Stooq as a second free source and
+local CSV for any other dataset. **A network failure raises**; it never
+degrades to simulated prices. Synthetic data must be asked for by name, and
+every report built on it carries a banner saying so.
 
-If accounting ever fails, it warns and the request still returns. A cost tool
-that can take down a request path is not worth having.
+## What's inside
+
+- **26 causal features** — multi-horizon momentum normalized by realized
+  volatility, RSI, MACD, Bollinger z-scores, ATR, volume z-scores, range
+  position, cyclical calendar encodings. All scale-free, so a model still
+  applies after the stock doubles (there's a test for that).
+- **Supervised models** — ridge, random forest, histogram gradient boosting,
+  all heavily regularized because with ~25 features and a signal-to-noise ratio
+  near zero, an unconstrained learner fits noise and loses to predicting zero.
+  Baselines (zero, mean, persistence) run alongside and sometimes win.
+- **`QLearningAgent`** — tabular Q-learning over a quantile-discretized state,
+  fitted on training data only. Small enough to print and read.
+- **`ReinforceAgent`** — policy gradient with a value baseline, entropy
+  regularization and Adam, in ~80 lines of NumPy. No PyTorch. The entropy bonus
+  isn't decoration: without it the policy collapses onto one action within a few
+  episodes, because on noisy data any lucky streak looks decisive.
+- **`TradingEnv`** — long/flat/short, costs in the reward, current position in
+  the state (which is what makes it properly Markovian: what to do next depends
+  on what you hold, because changing your mind costs money).
+- **Walk-forward everything** — a fresh model *and a fresh agent* per fold, with
+  an embargo gap so the last training label isn't known only on the first test
+  day. K-fold on price data lets a model train on Thursday to predict Wednesday.
+
+Both agents are verified to solve a market that *is* solvable, recovering >50%
+of the theoretical maximum profit with rising learning curves — so a null result
+on real data is a statement about the market, not a broken implementation.
+
+## Honest limitations
+
+- **Daily bars only.** No intraday, no order book, no borrow costs for shorts,
+  no slippage model beyond a flat per-unit cost.
+- **Execution is assumed at the close** of the day the decision is made. Real
+  fills are worse.
+- **Single asset, no portfolio construction**, no position sizing beyond
+  -1/0/+1, no risk limits.
+- **Survivorship bias** is untouched — backtest a delisted ticker and you'll get
+  nothing; backtest today's index members and you've already cheated.
+- **The multiple-comparisons problem is yours.** Nothing stops you from trying
+  fifty symbols and reporting the best. The p-values above are not corrected for
+  that, and the verdict text says so.
+
+This is research tooling for studying market predictability. **It is not
+investment advice and not a trading system.**
+
+---
+
+## finops
+
+The other half of the repo: token accounting and cost control for Claude
+applications — per-request cost, what prompt caching actually saved, context
+budgeting, and an append-only usage ledger. See **[docs/finops.md](docs/finops.md)**.
 
 ```console
 $ finops report --group-by tag:feature --since 7d
-group           calls        cost     $/call   cached       saved
-------------------------------------------------------------------
-search          8,204  $ 241.5533  $  0.0294     91%  $1,884.2210
-summarize       1,190  $  88.0412  $  0.0740      0%  $    0.0000
-classify       19,553  $  31.2044  $  0.0016     44%  $   61.9832
-------------------------------------------------------------------
-TOTAL          28,947  $ 360.7989  $  0.0125     78%  $1,946.2042
-
-Prompt caching saved $1,946.2042 (84% of what this traffic would otherwise
-have cost).
 ```
-
-That "saved" column is the point. It is computed per record as *what this exact
-request would have cost with no caching* minus what it did cost — so it goes
-**negative** when a prefix is written and never reused, and the report says so
-rather than quietly showing a smaller number.
-
-## Decide whether to cache, before you build it
-
-Cache reads bill at 0.1x the input rate; writes at 1.25x (5m TTL) or 2x (1h).
-So a cached prefix pays for itself from the 2nd request at 5m, the 3rd at 1h.
-
-```console
-$ finops cache --tokens 30000 --requests 5 --ttl 1h
-prefix             30,000 tokens on claude-opus-5
-traffic            5 requests, 1 cache write(s), 1h TTL
-uncached           $0.7500
-cached             $0.3600
-break-even         3 requests per write at 1h
-
-=> cache it: saves $0.3900 (52% of prefix cost)
-```
-
-`--writes N` models bursty traffic where entries expire between bursts. Below
-~1024 tokens the tool warns you: prefixes that short silently do not cache at
-all.
-
-## Count tokens honestly
-
-```python
-from finops import TokenCounter
-
-with TokenCounter("claude-opus-5") as counter:
-    tokens = counter.count_file("CLAUDE.md")   # exact, via the API
-```
-
-Counts come from Anthropic's `count_tokens` endpoint — the only exact source —
-and are memoized on disk by content hash, so re-counting an unchanged file
-costs nothing. **`tiktoken` is deliberately not used anywhere**: it is OpenAI's
-tokenizer and undercounts Claude by 15–20% on prose, more on code.
-
-With no API access, `estimate()` returns a range rather than a fake-precise
-integer:
-
-```python
->>> counter.estimate(source_code)
-~4,120 tokens (±618, heuristic)
-```
-
-`counter.calibrate([...samples])` fits the estimator to your own corpus against
-real counts and persists the ratio, after which estimates report as
-`calibrated`.
-
-## Fit the context window, and order it for cache hits
-
-```python
-from finops import ContextBudget, Item, order_for_cache
-
-budget = ContextBudget("claude-opus-5", reserve_output=8000, headroom=0.05)
-result = budget.pack([
-    Item("system",    content=SYSTEM,  required=True),
-    Item("tools",     content=TOOLS,   required=True),
-    Item("history",   content=HISTORY, priority=3.0, stable=False),
-    *[Item(doc.name, content=doc.text, priority=doc.score) for doc in retrieved],
-    Item("question",  content=question, required=True, stable=False),
-])
-
-print(result.summary())
-# 14 items, 924,103/941,436 tokens (98% of budget); dropped 3: doc_41, doc_9, doc_18
-```
-
-Required items are guaranteed; the rest are chosen greedily by value density
-(priority per token), which is the right approximation for the 0/1 knapsack this
-actually is. Content is **dropped whole, never truncated mid-document**, and
-included items keep your original ordering. An impossible budget raises at
-construction rather than yielding a silent zero.
-
-`order_for_cache()` moves byte-stable content ahead of volatile content, so the
-cacheable prefix is as long as it can be. Caching is a strict prefix match — one
-byte changing early invalidates everything after it.
-
-## Price anything, including what you haven't built yet
-
-```console
-$ finops price -i 10000 -o 2000 --cache-read 50000 --cache-write 10000 --per-day 5000
-total              $0.187500
-without caching    $0.400000
-cache saved        $0.212500
-
-at 5,000 calls/day: $937.50/day, $28,125.00/month
-```
-
-`--batch` applies Message Batches pricing (50%); `--speed fast` prices fast mode
-on the models that offer it.
-
-## On the price table
-
-Rates are a **cached snapshot** (`models.SNAPSHOT_DATE`), covering Anthropic
-first-party API pricing. Two deliberate choices:
-
-- **An unknown model raises `UnknownModel`, it does not guess.** A cost tool
-  that invents a plausible price is worse than one that refuses to answer.
-  Register partner or custom rates yourself with `finops.models.register(...)`.
-- **Pricing is never auto-refreshed.** `refresh_limits_from_api()` updates
-  context and output *limits* from the Models API, which does not publish
-  pricing; rates stay an explicit human decision.
-
-Lookups tolerate provider prefixes and dated snapshots
-(`us.anthropic.claude-opus-5`, `claude-opus-4-5@20251101`), so one ledger can
-hold traffic from several deployments. Per-category costs are recomputed at read
-time, so correcting the table retroactively fixes historical reports.
-
-Bedrock and Vertex are partner-operated with separate pricing — register those
-rates rather than trusting the bundled ones.
-
-## Ledger format
-
-Newline-delimited JSON, appended. Single short lines opened `O_APPEND` are
-atomic on POSIX, so many processes can share a ledger without locking, and the
-file stays greppable and shippable to any log pipeline. Aggregation happens at
-read time; malformed lines are skipped, never fatal.
-
-```bash
-finops report --group-by day --since 30d --json | jq '.total.cost'
-```
-
-## Tests
-
-```bash
-python -m pytest        # 77 tests, no network required
-```
-
-The suite pins the pricing arithmetic against hand-computed values, so a
-mistyped rate fails a test rather than quietly mis-billing a report.
